@@ -5500,6 +5500,14 @@ void process_commands() {
 
       #endif // HAS_MICROSTEPS
 
+      case 700:
+      {
+        SERIAL_ECHOLN(X_MAX);
+        SERIAL_ECHOLN(X_AXIS);
+        update_endstop( X_MAX, X_AXIS );
+      }
+      break;
+      
       case 999: // M999: Restart after being Stopped
         gcode_M999();
         break;

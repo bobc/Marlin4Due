@@ -72,11 +72,8 @@ static unsigned short step_loops_nominal;
 
 volatile long endstops_trigsteps[3] = { 0 };
 volatile long endstops_stepsTotal, endstops_stepsDone;
-static volatile char endstop_hit_bits = 0;
-static volatile bool endstop_x_hit = false;
-static volatile bool endstop_y_hit = false;
-static volatile bool endstop_z_hit = false;
-static volatile bool endstop_z_probe_hit = false; // Leaving this in even if Z_PROBE_ENDSTOP isn't defined, keeps code below cleaner. #ifdef it and usage below to save space.
+static volatile int endstop_hit_bits = 0;
+static volatile int old_endstop_bits = 0;
 
 #ifdef ABORT_ON_ENDSTOP_HIT_FEATURE_ENABLED
   bool abort_on_endstop_hit = false;
@@ -176,6 +173,7 @@ volatile signed char count_direction[NUM_AXIS] = { 1, 1, 1, 1 };
 #endif
 
 #define E_APPLY_STEP(v,Q) E_STEP_WRITE(v)
+#define _AXIS(AXIS) AXIS ##_AXIS
 
 // intRes = intIn1 * intIn2 >> 16
 #define MultiU16X8toH16(intRes, charIn1, intIn2)   intRes = ((charIn1) * (intIn2)) >> 16
@@ -185,11 +183,10 @@ volatile signed char count_direction[NUM_AXIS] = { 1, 1, 1, 1 };
 
 void endstops_hit_on_purpose() {
   endstop_hit_bits = 0;
-  // endstop_x_hit = endstop_y_hit = endstop_z_hit = endstop_z_probe_hit = false; // #ifdef endstop_z_probe_hit = to save space if needed.
 }
 
 void checkHitEndstops() {
-  if (endstop_hit_bits) { // #ifdef || endstop_z_probe_hit to save space if needed.
+  if (endstop_hit_bits) {
     SERIAL_ECHO_START;
     SERIAL_ECHOPGM(MSG_ENDSTOPS_HIT);
     if (endstop_hit_bits & BIT(X_MIN)) {
@@ -230,6 +227,25 @@ void checkHitEndstops() {
 }
 
 void enable_endstops(bool check) { check_endstops = check; }
+
+void update_endstop( EndstopEnum endstop ) {
+  char axis = EndstopConfig[endstop].axis;
+  int endstop_pin = EndstopConfig[endstop].pin;
+  bool endstop_inverting = EndstopConfig[endstop].inverting;
+  bool endstop_hit = (READ_VAR(endstop_pin) != endstop_inverting);
+  
+  if (endstop_hit) {
+    if (TEST(old_endstop_bits, endstop) && (current_block->steps[axis] > 0)) {
+      endstops_trigsteps[axis] = count_position[axis];
+      endstop_hit_bits |= BIT(endstop);
+      step_events_completed = current_block->step_event_count;
+    }
+    old_endstop_bits |= BIT(endstop);
+  }
+  else {
+    old_endstop_bits = ~BIT(endstop);
+  }
+}
 
 //         __________________________
 //        /|                        |\     _________________         ^
@@ -275,6 +291,7 @@ FORCE_INLINE unsigned long calc_timer(unsigned long step_rate) {
 }
 
 // set the stepper direction of each axis
+FORCE_INLINE
 void set_stepper_direction() {
   
     // Set the direction bits (X_AXIS=A_AXIS and Y_AXIS=B_AXIS for COREXY)
@@ -319,7 +336,8 @@ void set_stepper_direction() {
 
 // Initializes the trapezoid generator from the current block. Called whenever a new
 // block begins.
-FORCE_INLINE void trapezoid_generator_reset() {
+FORCE_INLINE
+void trapezoid_generator_reset() {
 
   // Set directions TO DO This should be done once during init of trapezoid. Endstops -> interrupt
   out_bits = current_block->direction_bits;
@@ -403,23 +421,6 @@ HAL_STEP_TIMER_ISR {
     // Check endstops
     if (check_endstops) {
       
-      #define _ENDSTOP(axis, minmax) axis ##_## minmax ##_endstop
-      #define _ENDSTOP_PIN(AXIS, MINMAX) AXIS ##_## MINMAX ##_PIN
-      #define _ENDSTOP_INVERTING(AXIS, MINMAX) AXIS ##_## MINMAX ##_ENDSTOP_INVERTING
-      #define _OLD_ENDSTOP(axis, minmax) old_## axis ##_## minmax ##_endstop
-      #define _AXIS(AXIS) AXIS ##_AXIS
-      #define _HIT_BIT(AXIS) AXIS ##_MIN
-      #define _ENDSTOP_HIT(AXIS) endstop_hit_bits |= BIT(_HIT_BIT(AXIS))
-
-      #define UPDATE_ENDSTOP(axis,AXIS,minmax,MINMAX) \
-        bool _ENDSTOP(axis, minmax) = (READ(_ENDSTOP_PIN(AXIS, MINMAX)) != _ENDSTOP_INVERTING(AXIS, MINMAX)); \
-        if (_ENDSTOP(axis, minmax) && _OLD_ENDSTOP(axis, minmax) && (current_block->steps[_AXIS(AXIS)] > 0)) { \
-          endstops_trigsteps[_AXIS(AXIS)] = count_position[_AXIS(AXIS)]; \
-          _ENDSTOP_HIT(AXIS); \
-          step_events_completed = current_block->step_event_count; \
-        } \
-        _OLD_ENDSTOP(axis, minmax) = _ENDSTOP(axis, minmax);
-      
       #ifdef COREXY
         // Head direction in -X axis for CoreXY bots.
         // If DeltaX == -DeltaY, the movement is only in Y axis
@@ -435,7 +436,7 @@ HAL_STEP_TIMER_ISR {
             #endif
               {
                 #if HAS_X_MIN
-                  UPDATE_ENDSTOP(x, X, min, MIN);
+                  update_endstop(x_MIN);
                 #endif
               }
           }
@@ -446,7 +447,7 @@ HAL_STEP_TIMER_ISR {
             #endif
               {
                 #if HAS_X_MAX
-                  UPDATE_ENDSTOP(x, X, max, MAX);
+                  update_endstop(X_MAX);
                 #endif
               }
           }
@@ -461,12 +462,12 @@ HAL_STEP_TIMER_ISR {
       #endif
           { // -direction
             #if HAS_Y_MIN
-              UPDATE_ENDSTOP(y, Y, min, MIN);
+              update_endstop(Y_MIN);
             #endif
           }
           else { // +direction
             #if HAS_Y_MAX
-              UPDATE_ENDSTOP(y, Y, max, MAX);
+              update_endstop(Y_MAX);
             #endif
           }
       #ifdef COREXY
@@ -499,7 +500,7 @@ HAL_STEP_TIMER_ISR {
 
         #else // !Z_DUAL_ENDSTOPS
 
-          UPDATE_ENDSTOP(z, Z, min, MIN);
+          update_endstop(Z_MIN);
 
         #endif // !Z_DUAL_ENDSTOPS
 
@@ -535,14 +536,14 @@ HAL_STEP_TIMER_ISR {
 
         #else // !Z_DUAL_ENDSTOPS
 
-          UPDATE_ENDSTOP(z, Z, max, MAX);
+          update_endstop(Z_MAX);
 
         #endif // !Z_DUAL_ENDSTOPS
 
       #endif // Z_MAX_PIN
       
       #ifdef Z_PROBE_ENDSTOP
-        UPDATE_ENDSTOP(z, Z, probe, PROBE);
+        update_endstop(Z_PROBE);
         z_probe_endstop=(READ(Z_PROBE_PIN) != Z_PROBE_ENDSTOP_INVERTING);
         if(z_probe_endstop && old_z_probe_endstop)
         {

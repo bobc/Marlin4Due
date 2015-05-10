@@ -19,6 +19,8 @@
 #define DIGIPOTSS_PIN -1
 #define HEATER_3_PIN -1
 #define TEMP_3_PIN -1
+#define Z2_MIN_PIN -1
+#define Z2_MAX_PIN -1
 
 #if MB(RADDS)
   #include "pins_RADDS.h"
